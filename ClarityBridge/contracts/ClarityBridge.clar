@@ -271,4 +271,86 @@
     }
 )
 
+;; =================================================================================
+;; COMPLEX FEATURES
+;; =================================================================================
+
+;; @desc Request a premium chat with extended context and validation.
+;; This function handles high-priority requests that require more processing power from off-chain agents.
+;; It includes simulating a discount check (placeholder), verifying priority, managing context hashes,
+;; and emitting specific events for premium bot listeners.
+;;
+;; @param prompt: The main question or prompt
+;; @param context-data: Additional context for the AI (e.g. user history summary, large text block)
+;; @param priority-level: A numeric priority 1-10
+;; @param referral-code: Optional principal who referred this user (not used in logic yet, just logged)
+(define-public (request-premium-chat-with-context 
+    (prompt (string-utf8 256)) 
+    (context-data (string-utf8 256)) 
+    (priority-level uint)
+    (referral-code (optional principal)))
+    (let
+        (
+            (request-id (increment-nonce))
+            (sender tx-sender)
+            (current-total-fees (var-get total-fees-collected))
+            ;; In a real scenario, this context hash would significantly verify integrity
+            (context-hash (sha256 (unwrap-panic (to-consensus-buff? context-data))))
+        )
+        ;; 1. Global Checks
+        (asserts! (not (is-paused)) err-contract-paused)
+        
+        ;; 2. Parameter Validation
+        ;; Priority must be within sensible bounds for premium service
+        ;; u1 is lowest premium priority, u10 is urgent
+        (asserts! (and (>= priority-level u1) (<= priority-level u10)) err-invalid-priority)
+        
+        ;; 3. Handle Payment
+        ;; Transfer premium fee to contract. In future versions, we might split this 
+        ;; between the contract owner and the specific bot that claims it.
+        (try! (stx-transfer? premium-chat-price sender (as-contract tx-sender)))
+        
+        ;; 4. Log the extensive context for off-chain indexing
+        ;; The off-chain agent scans for "premium-request" events to prioritize them.
+        (print {
+            event: "premium-request",
+            id: request-id,
+            user: sender,
+            context-hash: context-hash,
+            priority: priority-level,
+            referral: referral-code
+        })
+
+        ;; 5. Store the request with specific premium flags
+        (map-set requests request-id {
+            user: sender,
+            prompt: prompt,
+            status: "premium-pending",
+            is-premium: true,
+            created-at: block-height
+        })
+
+        ;; 6. Update global stats
+        (var-set total-fees-collected (+ current-total-fees premium-chat-price))
+        
+        ;; 7. High-Priority Alert
+        ;; If priority is > 8, emit a special alert for immediate attention
+        (if (> priority-level u8)
+            (begin
+                (print {
+                    notification: "URGENT_PRIORITY_ALERT",
+                    target-id: request-id,
+                    msg: "Immediate processing required for high-tier user"
+                })
+                false
+            )
+            false ;; No-op for lower priority
+        )
+
+        ;; 8. Final Return
+        ;; Return the request ID so the user can poll for results or track status
+        (ok request-id)
+    )
+)
+
 
